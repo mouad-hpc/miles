@@ -1,0 +1,104 @@
+# Single-node k8s Job that runs examples/tau-bench/run_qwen3_4B.sh
+# with mlflow tracking enabled. Exercises the tracking_utils refactor on
+# fix/tracking-step-mapping end-to-end against a real qwen3-4B run.
+#
+# Apply:
+#   kubectl apply -f scripts/k8s/miles-qwen3-4b-tau-bench.yaml
+#
+# Tail logs:
+#   kubectl -n trainers logs -f job/miles-qwen3-4b-tau-bench
+#
+# Placeholders to fill in (search for "<...>" below):
+#   - <MILES_SRC_PVC>            PVC containing the miles checkout (or use a git-sync sidecar)
+#   - <MODEL_CKPTS_PVC>          PVC with /root/Qwen3-4B-Instruct-2507/ and /root/tau-bench/
+#   - <HF_CACHE_PVC>             PVC for HuggingFace cache (optional but recommended)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: miles-qwen3-4b-tau-bench
+  namespace: trainers
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: skypilot-high-priority
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H200
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: trainer
+          image: radixark/miles:dev
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -ex
+              # mlflow ships as an extras in setup.py and isn't in the base
+              # miles image; install it before the run.
+              pip install --no-cache-dir "mlflow>=2.0"
+              cd /workspace/miles
+
+              # The tau-bench script doesn't accept positional args, so patch
+              # it in place: shrink to ~10 rollouts, disable save/eval, scale
+              # to 8 GPUs, and swap the (commented-out) WANDB_ARGS block for
+              # an mlflow one. MLFLOW_TRACKING_URI is read from env.
+              sed -i \
+                -e 's/^NUM_GPUS=2$/NUM_GPUS=8/' \
+                -e 's/--num-rollout 500/--num-rollout 20/' \
+                -e 's/--save-interval 20/--save-interval 9999/' \
+                -e 's/--eval-interval 5/--eval-interval 9999/' \
+                -e 's|# --use-wandb|--use-mlflow|' \
+                -e 's|# --wandb-project miles-tau-bench|--mlflow-experiment-name miles-tracking-smoke|' \
+                -e "s|# --wandb-group qwen3-4B|--mlflow-run-name qwen3-4b-tau-smoke-$(date +%s)|" \
+                -e '/# --wandb-key/d' \
+                examples/tau-bench/run_qwen3_4B.sh
+
+              bash examples/tau-bench/run_qwen3_4B.sh
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: https://mlflow-staging.gulp.dev
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: miles-tracking-smoke
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: NCCL_DEBUG
+              value: INFO
+            - name: HF_HOME
+              value: /workspace/hf-cache
+          resources:
+            requests:
+              cpu: "64"
+              memory: 1500Gi
+              nvidia.com/gpu: "8"
+              ephemeral-storage: 200Gi
+            limits:
+              nvidia.com/gpu: "8"
+              memory: 1500Gi
+          volumeMounts:
+            - name: miles-src
+              mountPath: /workspace/miles
+            - name: model-ckpts
+              mountPath: /root
+            - name: hf-cache
+              mountPath: /workspace/hf-cache
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: miles-src
+          persistentVolumeClaim:
+            claimName: <MILES_SRC_PVC>
+        - name: model-ckpts
+          persistentVolumeClaim:
+            claimName: <MODEL_CKPTS_PVC>
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: <HF_CACHE_PVC>
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Gi
