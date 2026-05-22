@@ -9,7 +9,7 @@ from miles.utils.env_report import decode_env_report
 logger = logging.getLogger(__name__)
 
 
-def _is_offline_mode(args) -> bool:
+def is_offline_mode(args) -> bool:
     """Detect whether W&B should run in offline mode.
 
     Priority order:
@@ -21,7 +21,7 @@ def _is_offline_mode(args) -> bool:
     return os.environ.get("WANDB_MODE") == "offline"
 
 
-def _wandb_settings(**kwargs):
+def wandb_settings(**kwargs):
     return wandb.Settings(init_timeout=300.0, **kwargs)
 
 
@@ -40,7 +40,7 @@ def init_wandb_primary(args):
         elif args.wandb_mode == "online":
             logger.info("W&B online mode enabled. Data will be uploaded to cloud.")
 
-    offline = _is_offline_mode(args)
+    offline = is_offline_mode(args)
 
     # Only perform explicit login when NOT offline
     if (not offline) and args.wandb_key is not None:
@@ -61,14 +61,14 @@ def init_wandb_primary(args):
         "project": args.wandb_project,
         "group": group,
         "name": run_name,
-        "config": _compute_config_for_logging(args),
+        "config": compute_config_for_logging(args),
     }
 
     # Configure settings based on offline/online mode
     if offline:
-        init_kwargs["settings"] = _wandb_settings(mode="offline")
+        init_kwargs["settings"] = wandb_settings(mode="offline")
     else:
-        init_kwargs["settings"] = _wandb_settings(mode="shared", x_primary=True)
+        init_kwargs["settings"] = wandb_settings(mode="shared", x_primary=True)
 
     # Add custom directory if specified
     if args.wandb_dir:
@@ -79,13 +79,13 @@ def init_wandb_primary(args):
 
     wandb.init(**init_kwargs)
 
-    _init_wandb_common()
+    init_wandb_common()
 
     # Set wandb_run_id in args for easy access throughout the training process
     args.wandb_run_id = wandb.run.id
 
 
-def _compute_config_for_logging(args):
+def compute_config_for_logging(args):
     output = deepcopy(args.__dict__)
 
     whitelist_env_vars = [
@@ -111,7 +111,7 @@ def init_wandb_secondary(args, router_addr=None):
     if args.wandb_mode:
         os.environ["WANDB_MODE"] = args.wandb_mode
 
-    offline = _is_offline_mode(args)
+    offline = is_offline_mode(args)
 
     if (not offline) and args.wandb_key is not None:
         wandb.login(key=args.wandb_key, host=args.wandb_host)
@@ -144,7 +144,7 @@ def init_wandb_secondary(args, router_addr=None):
         "config": args.__dict__,
         "resume": "allow",
         "reinit": True,
-        "settings": _wandb_settings(**settings_kwargs),
+        "settings": wandb_settings(**settings_kwargs),
     }
 
     # Add custom directory if specified
@@ -154,10 +154,10 @@ def init_wandb_secondary(args, router_addr=None):
 
     wandb.init(**init_kwargs)
 
-    _init_wandb_common()
+    init_wandb_common()
 
 
-def _init_wandb_common():
+def init_wandb_common():
     wandb.define_metric("train/step")
     wandb.define_metric("train/*", step_metric="train/step")
     wandb.define_metric("rollout/step")

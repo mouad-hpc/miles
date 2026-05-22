@@ -21,21 +21,18 @@ logger = logging.getLogger(__name__)
 
 
 class TrackingBackend(ABC):
-    # Interface every logging backend must satisfy.
 
     @abstractmethod
     def init(self, args, *, primary: bool = True, **kwargs) -> None: ...
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None: ...
+    def log(self, metrics: dict[str, Any], step: int, step_key: str) -> None: ...
 
     @abstractmethod
     def finish(self) -> None: ...
 
 
-# Thin adapters for backwards compatibility to keep wandb_utils and tensorboard_utils untouched.
 class WandbBackend(TrackingBackend):
-    # Delegates to the existing ``wandb_utils`` helpers.
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from . import wandb_utils
@@ -45,7 +42,7 @@ class WandbBackend(TrackingBackend):
         else:
             wandb_utils.init_wandb_secondary(args, **kwargs)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int, step_key: str) -> None:
         import wandb
 
         wandb.log(metrics)
@@ -58,23 +55,21 @@ class WandbBackend(TrackingBackend):
 
 class TensorboardBackend(TrackingBackend):
     def __init__(self) -> None:
-        self._adapter = None
+        self.adapter = None
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
-        from .tensorboard_utils import _TensorboardAdapter
+        from .tensorboard_utils import TensorboardAdapter
 
-        self._adapter = _TensorboardAdapter(args)
+        self.adapter = TensorboardAdapter(args)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
-        if self._adapter is not None:
-            # Strip step-key entries (e.g. "train/step", "rollout/step") —
-            # tensorboard receives step as an explicit argument instead.
-            data = {k: v for k, v in metrics.items() if not k.endswith("/step")}
-            self._adapter.log(data=data, step=step)
+    def log(self, metrics: dict[str, Any], step: int, step_key: str) -> None:
+        if self.adapter is not None:
+            data = {k: v for k, v in metrics.items() if k != step_key}
+            self.adapter.log(data=data, step=step)
 
     def finish(self) -> None:
-        if self._adapter is not None:
-            self._adapter.finish()
+        if self.adapter is not None:
+            self.adapter.finish()
 
 
 class MlflowBackend(TrackingBackend):
@@ -84,7 +79,7 @@ class MlflowBackend(TrackingBackend):
 
         mlflow_utils.init_mlflow(args, primary=primary, **kwargs)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int, step_key: str) -> None:
         from . import mlflow_utils
 
         mlflow_utils.log_metrics(metrics, step=step)
@@ -96,15 +91,13 @@ class MlflowBackend(TrackingBackend):
 
 
 class PrometheusBackend(TrackingBackend):
-    # Wraps the existing Ray-actor based prometheus collector. The actor lifetime is
-    # tied to the Ray job, so finish() is intentionally a no-op.
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from .prometheus_utils import init_prometheus
 
         init_prometheus(args, start_server=primary)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int, step_key: str) -> None:
         from .prometheus_utils import get_prometheus
 
         prom = get_prometheus()
@@ -118,8 +111,6 @@ class PrometheusBackend(TrackingBackend):
         return
 
 
-# Registry that maps backend name → (class, args-flag attribute)
-
 BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
     "wandb": (WandbBackend, "use_wandb"),
     "tensorboard": (TensorboardBackend, "use_tensorboard"),
@@ -129,10 +120,9 @@ BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
 
 
 class TrackingManager:
-    # Initializes and logs to every enabled backend; used internally by ``tracking_utils``.
 
     def __init__(self) -> None:
-        self._backends: list[TrackingBackend] = []
+        self.backends: list[TrackingBackend] = []
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         for name, (cls, flag) in BACKEND_REGISTRY.items():
@@ -140,14 +130,14 @@ class TrackingManager:
                 logger.info("Initialising tracking backend: %s", name)
                 backend = cls()
                 backend.init(args, primary=primary, **kwargs)
-                self._backends.append(backend)
+                self.backends.append(backend)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
-        for backend in self._backends:
-            backend.log(metrics, step=step)
+    def log(self, metrics: dict[str, Any], step: int, step_key: str) -> None:
+        for backend in self.backends:
+            backend.log(metrics, step=step, step_key=step_key)
 
     def finish(self) -> None:
-        for backend in self._backends:
+        for backend in self.backends:
             try:
                 backend.finish()
             except Exception:
@@ -155,4 +145,4 @@ class TrackingManager:
                     "Error finishing tracking backend %s",
                     type(backend).__name__,
                 )
-        self._backends.clear()
+        self.backends.clear()

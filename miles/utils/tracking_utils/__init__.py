@@ -3,17 +3,17 @@ import logging
 from .base import TrackingManager
 
 logger = logging.getLogger(__name__)
-_manager = TrackingManager()
+manager = TrackingManager()
 
 
 def init_tracking(args, primary: bool = True, **kwargs):
-    _manager.init(args, primary=primary, **kwargs)
+    manager.init(args, primary=primary, **kwargs)
 
 
 def log(args, metrics, step_key: str):
-    step = metrics.get(step_key)
-    _manager.log(metrics, step=step)
+    step = metrics[step_key]
+    manager.log(metrics, step=step, step_key=step_key)
 
 
 def finish_tracking():
-    _manager.finish()
+    manager.finish()
